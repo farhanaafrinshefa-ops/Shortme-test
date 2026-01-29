@@ -1,15 +1,17 @@
 
-export const RENDER_WORKER_CODE = `
+// 1. IMPORTS & ERROR HANDLING
+const HEADER_CODE = `
 // Use jsdelivr for stable ESM support in Workers
 import MP4Box from "https://cdn.jsdelivr.net/npm/mp4box@0.5.2/+esm";
 
-// Global error handler for the worker to report startup issues
 self.onerror = function(e) {
     console.error("Worker Global Error:", e);
     self.postMessage({ type: 'error', payload: "Worker Start Failed: " + (e.message || e) });
 };
+`;
 
-// --- MP4Demuxer ---
+// 2. DEMUXER CLASS
+const DEMUXER_CODE = `
 class MP4Demuxer {
   constructor() {
     this.file = MP4Box.createFile();
@@ -21,6 +23,7 @@ class MP4Demuxer {
     this.file.onReady = (info) => {
       this.videoTrack = info.videoTracks[0];
       this.audioTrack = info.audioTracks[0];
+      console.log("[Demuxer] Info Ready. Video Track:", this.videoTrack?.id);
       if (this.resolveReady) this.resolveReady();
     };
 
@@ -41,7 +44,6 @@ class MP4Demuxer {
 
     this.file.appendBuffer(buffer);
     this.file.flush();
-    
     return readyPromise;
   }
 
@@ -117,6 +119,9 @@ class MP4Demuxer {
           const check = setInterval(() => {
               if (chunks.length > 0 && chunks.length === lastCount) {
                   clearInterval(check);
+                  // --- DEBUG LOGS ---
+                  console.log('Demuxer Video Chunks array length:', chunks.length); 
+                  console.log('Demuxer Video Total bytes:', chunks.reduce((sum, c) => sum + c.byteLength, 0));
                   resolve(chunks);
               }
               lastCount = chunks.length;
@@ -158,8 +163,10 @@ class MP4Demuxer {
       });
   }
 }
+`;
 
-// --- MP4Muxer ---
+// 3. MUXER CLASS
+const MUXER_CODE = `
 class MP4Muxer {
   constructor() {
     this.file = MP4Box.createFile();
@@ -170,7 +177,6 @@ class MP4Muxer {
 
   addVideoTrack(config) {
     const avcc = config.description ? new Uint8Array(config.description) : undefined;
-
     this.videoTrackId = this.file.addTrack({
       timescale: 1000000,
       width: config.width,
@@ -205,16 +211,10 @@ class MP4Muxer {
 
   addVideoChunk(chunk, fallbackDuration) {
     if (this.videoTrackId === null) return;
-    
     const data = new Uint8Array(chunk.byteLength);
     chunk.copyTo(data);
-
-    // FIX: Handle null/undefined explicitly for MP4Box
-    // MP4Box requires a number. chunk.duration can be null in WebCodecs.
     let dur = chunk.duration;
-    if (dur === null || dur === undefined) {
-        dur = fallbackDuration || 0;
-    }
+    if (dur === null || dur === undefined) dur = fallbackDuration || 0;
 
     this.file.addSample(this.videoTrackId, data.buffer, {
       duration: dur,
@@ -226,14 +226,10 @@ class MP4Muxer {
 
   addAudioChunk(chunk) {
       if (this.audioTrackId === null) return;
-      
       const data = new Uint8Array(chunk.byteLength);
       chunk.copyTo(data);
-
       let dur = chunk.duration;
-      if (dur === null || dur === undefined) {
-          dur = 0;
-      }
+      if (dur === null || dur === undefined) dur = 0;
 
       this.file.addSample(this.audioTrackId, data.buffer, {
           duration: dur,
@@ -245,21 +241,27 @@ class MP4Muxer {
 
   getBlob() {
     const buffer = this.file.getBuffer();
+    console.log("Muxer: Generated MP4 Buffer Size:", buffer.byteLength);
     return new Blob([buffer], { type: 'video/mp4' });
   }
 }
+`;
 
-// --- Compositor ---
+// 4. COMPOSITOR CLASS (Uses Manual String Concat for inner shaders to be safe)
+const COMPOSITOR_CODE = `
 class Compositor {
     constructor(width, height) {
         this.canvas = new OffscreenCanvas(width, height);
-        this.gl = this.canvas.getContext('webgl2', { 
+        // FORCE PRESERVE DRAWING BUFFER & NO ALPHA FOR VIDEO
+        const gl = this.canvas.getContext('webgl2', { 
             alpha: false, 
-            desynchronized: true, 
-            powerPreference: 'high-performance' 
+            powerPreference: 'high-performance',
+            preserveDrawingBuffer: true,
+            antialias: false
         });
 
-        if (!this.gl) throw new Error("WebGL2 not supported");
+        if (!gl) throw new Error("WebGL2 not supported");
+        this.gl = gl;
 
         this.overlayCanvas = new OffscreenCanvas(width, height);
         this.overlayCtx = this.overlayCanvas.getContext('2d');
@@ -267,30 +269,32 @@ class Compositor {
         this.initShaders();
         this.initBuffers();
         this.initTextures();
+        
+        // Initial Clear to verify context is alive
+        this.gl.clearColor(0.1, 0.1, 0.1, 1.0);
+        this.gl.clear(this.gl.COLOR_BUFFER_BIT);
     }
 
     initShaders() {
-        const vsSource = \`#version 300 es
-            in vec2 a_position;
-            in vec2 a_texCoord;
-            uniform vec2 u_cropScale;
-            uniform vec2 u_cropOffset;
-            out vec2 v_texCoord;
-            void main() {
-                gl_Position = vec4(a_position, 0.0, 1.0);
-                v_texCoord = (a_texCoord * u_cropScale) + u_cropOffset; 
-            }
-        \`;
+        const vsSource = "#version 300 es\\n" +
+            "in vec2 a_position;\\n" +
+            "in vec2 a_texCoord;\\n" +
+            "uniform vec2 u_cropScale;\\n" +
+            "uniform vec2 u_cropOffset;\\n" +
+            "out vec2 v_texCoord;\\n" +
+            "void main() {\\n" +
+            "    gl_Position = vec4(a_position, 0.0, 1.0);\\n" +
+            "    v_texCoord = (a_texCoord * u_cropScale) + u_cropOffset;\\n" +
+            "}";
 
-        const fsSource = \`#version 300 es
-            precision highp float;
-            uniform sampler2D u_image;
-            in vec2 v_texCoord;
-            out vec4 outColor;
-            void main() {
-                outColor = texture(u_image, v_texCoord);
-            }
-        \`;
+        const fsSource = "#version 300 es\\n" +
+            "precision highp float;\\n" +
+            "uniform sampler2D u_image;\\n" +
+            "in vec2 v_texCoord;\\n" +
+            "out vec4 outColor;\\n" +
+            "void main() {\\n" +
+            "    outColor = texture(u_image, v_texCoord);\\n" +
+            "}";
 
         const vertexShader = this.createShader(this.gl.VERTEX_SHADER, vsSource);
         const fragmentShader = this.createShader(this.gl.FRAGMENT_SHADER, fsSource);
@@ -310,6 +314,10 @@ class Compositor {
         const shader = this.gl.createShader(type);
         this.gl.shaderSource(shader, source);
         this.gl.compileShader(shader);
+        if (!this.gl.getShaderParameter(shader, this.gl.COMPILE_STATUS)) {
+            console.error(this.gl.getShaderInfoLog(shader));
+            throw new Error('Shader compile failed');
+        }
         return shader;
     }
 
@@ -363,7 +371,7 @@ class Compositor {
             
             if (ov.type === 'text') {
                 const fontSize = ov.scale * scaleFactor;
-                ctx.font = \`bold \${fontSize}px Inter, sans-serif\`;
+                ctx.font = "bold " + fontSize + "px Inter, sans-serif";
                 ctx.fillStyle = ov.style?.color || 'white';
                 ctx.textAlign = align;
                 ctx.textBaseline = 'middle';
@@ -398,7 +406,9 @@ class Compositor {
         });
 
         this.gl.bindTexture(this.gl.TEXTURE_2D, this.overlayTexture);
+        this.gl.pixelStorei(this.gl.UNPACK_FLIP_Y_WEBGL, true);
         this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, this.gl.RGBA, this.gl.UNSIGNED_BYTE, this.overlayCanvas);
+        this.gl.pixelStorei(this.gl.UNPACK_FLIP_Y_WEBGL, false);
     }
 
     getPosition(pos, w, h) {
@@ -456,18 +466,22 @@ class Compositor {
         
         this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4);
         this.gl.disable(this.gl.BLEND);
+
+        // FIX: FORCE FLUSH is critical for VideoFrame to pick up the draw
+        this.gl.finish();
     }
 
     getOutputFrame(timestamp, duration) {
-        // Fix: Ensure duration is passed as undefined if null/0 to avoid type errors
         return new VideoFrame(this.canvas, {
             timestamp: timestamp,
             duration: duration || undefined
         });
     }
 }
+`;
 
-// --- WORKER MAIN ---
+// 5. MAIN LOGIC
+const MAIN_CODE = `
 let demuxer = null;
 let muxer = null;
 let compositor = null;
@@ -505,7 +519,7 @@ async function prepareOverlays(overlays) {
                 const bmp = await createImageBitmap(ov.file);
                 overlayBitmaps.set(ov.id, bmp);
             } catch (e) {
-                console.warn(\`Failed to load image overlay \${ov.id}\`, e);
+                console.warn("Failed to load overlay " + ov.id, e);
             }
         }
     }
@@ -540,6 +554,9 @@ async function startPipeline(file, config) {
     try {
         postResponse({ type: 'status', payload: { phase: 'Initializing', progress: 0 } });
         
+        config.width = Math.floor(config.width / 2) * 2;
+        config.height = Math.floor(config.height / 2) * 2;
+
         const startTime = config.startTime || 0;
         const endTime = config.endTime || Infinity;
         const startMicro = startTime * 1_000_000;
@@ -558,7 +575,6 @@ async function startPipeline(file, config) {
         const decoderConfig = demuxer.getVideoConfig();
         if (!decoderConfig) throw new Error("No video track found.");
 
-        // NOTE: Muxer track addition deferred until first encoder output to capture AVCC.
         muxer = new MP4Muxer();
 
         const audioConfig = demuxer.getAudioConfig();
@@ -577,8 +593,6 @@ async function startPipeline(file, config) {
         }
 
         let framesProcessed = 0;
-        
-        // --- CHUNK FILTERING LOGIC ---
         let startIndex = videoChunks.findIndex(c => c.timestamp >= startMicro);
         if (startIndex === -1) startIndex = 0; 
 
@@ -595,6 +609,7 @@ async function startPipeline(file, config) {
         }
         
         const totalVideoFrames = validChunks.length;
+        console.log("Pipeline: Processing " + totalVideoFrames + " input chunks");
         
         let encoderResolve;
         let encoderReject;
@@ -604,14 +619,14 @@ async function startPipeline(file, config) {
         const targetFps = config.fps || 30;
         const calculatedBitrate = Math.floor(pixelCount * targetFps * 0.15);
         const finalBitrate = config.bitrate ? config.bitrate : Math.max(2_000_000, calculatedBitrate);
-
         const frameDuration = 1000000 / targetFps;
         
         let muxerStarted = false;
+        let encodedFrameCount = 0;
 
         videoEncoder = new VideoEncoder({
             output: (chunk, metadata) => {
-                // 1️⃣ Add video track ONCE
+                encodedFrameCount++;
                 if (!muxerStarted && metadata?.decoderConfig) {
                     muxer.addVideoTrack({
                         width: config.width,
@@ -619,13 +634,9 @@ async function startPipeline(file, config) {
                         codec: 'avc1.4d002a',
                         description: metadata.decoderConfig.description
                     });
-
-                    // 🔥 THIS LINE FIXES 0.00s VIDEO
                     muxer.start();
                     muxerStarted = true;
                 }
-
-                // 2️⃣ Add encoded chunk
                 muxer.addVideoChunk(chunk, frameDuration);
             },
             error: (e) => {
@@ -648,21 +659,18 @@ async function startPipeline(file, config) {
 
         videoDecoder = new VideoDecoder({
             output: async (frame) => {
-                // Pre-roll discard
                 if (frame.timestamp < startMicro) {
                     frame.close();
                     return;
                 }
-
                 const reframe = getInterpolatedReframe(config.reframeKeyframes || [], frame.timestamp / 1_000_000);
+                
                 compositor.render(frame, reframe);
                 frame.close(); 
 
-                // Offset Calculation
                 if (timestampOffset === null) timestampOffset = frame.timestamp;
                 const newTimestamp = frame.timestamp - timestampOffset;
 
-                // Fix: Robust null handling for duration in shim
                 const newFrame = compositor.getOutputFrame(newTimestamp, frame.duration || undefined);
                 
                 const shouldKeyFrame = (newTimestamp - lastKeyFrameTime) >= KEYFRAME_INTERVAL;
@@ -687,12 +695,10 @@ async function startPipeline(file, config) {
         let decoderStarted = false;
 
         for (const chunk of validChunks) {
-            // 🚨 Skip until first keyframe
             if (!decoderStarted) {
                 if (chunk.type !== 'key') continue;
                 decoderStarted = true;
             }
-
             while (videoDecoder.decodeQueueSize > 5) {
                 await new Promise(r => setTimeout(r, 10));
             }
@@ -701,9 +707,12 @@ async function startPipeline(file, config) {
 
         await videoDecoder.flush();
         await videoEncoder.flush();
+        
+        console.log("Pipeline: Encoding finished. Total Encoded Frames:", encodedFrameCount);
 
         if (audioConfig) {
             const validAudio = audioChunks.filter(c => c.timestamp >= startMicro && c.timestamp <= endMicro);
+            console.log("Pipeline: Processing " + validAudio.length + " audio chunks");
             for (const chunk of validAudio) {
                  if (timestampOffset !== null) {
                      const newTs = chunk.timestamp - timestampOffset;
@@ -732,3 +741,5 @@ async function startPipeline(file, config) {
     }
 }
 `;
+
+export const RENDER_WORKER_CODE = HEADER_CODE + DEMUXER_CODE + MUXER_CODE + COMPOSITOR_CODE + MAIN_CODE;

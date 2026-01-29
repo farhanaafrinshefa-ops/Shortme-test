@@ -1,7 +1,7 @@
 import { GeneratedClip, OverlayConfig } from '../types';
 import { ReframeKeyframe } from './reframeService';
 import { RenderConfig, WorkerCommand, WorkerResponse } from './render/types';
-import { RENDER_WORKER_CODE } from './render/renderWorkerShim';
+import { RENDER_WORKER_CODE } from './render/RenderWorkerShim';
 
 export interface ExportSettings {
   width: number;

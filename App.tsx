@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Dashboard } from './components/Dashboard';
-import { Editor } from './views/Editor';
+import { Editor } from './components/views/Editor';
 import { ProUpgrade } from './components/ProUpgrade';
 import { ClipConfig } from './components/ClipConfig';
 import { ClipGallery } from './components/ClipGallery';

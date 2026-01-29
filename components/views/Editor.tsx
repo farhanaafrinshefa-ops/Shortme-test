@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { GlassCard } from '../components/ui/GlassCard';
-import { Timeline } from '../components/Editor/Timeline';
-import { VideoProject, TimelineSegment, UserTier, GeminiAnalysisResult, GeneratedClip, OverlayConfig, OverlayPosition } from '../types';
-import { analyzeVideoContext, analyzeVideoLocal } from '../services/geminiService';
-import { getInterpolatedReframe } from '../services/reframeService';
-import { processVideoClip, downloadBlob, getSupportedFormats, VideoFormat, ExportSettings } from '../services/videoExportService';
+import { GlassCard } from '../ui/GlassCard';
+import { Timeline } from './Timeline';
+import { VideoProject, TimelineSegment, UserTier, GeminiAnalysisResult, GeneratedClip, OverlayConfig, OverlayPosition } from '../../types';
+import { analyzeVideoContext, analyzeVideoLocal } from '../../services/geminiService';
+import { getInterpolatedReframe } from '../../services/reframeService';
+import { processVideoClip, downloadBlob, getSupportedFormats, VideoFormat, ExportSettings } from '../../services/videoExportService';
 
 interface EditorProps {
   project: VideoProject;

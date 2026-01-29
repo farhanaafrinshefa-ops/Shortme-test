@@ -1,3 +1,4 @@
+
 import { OverlayConfig } from '../../types';
 
 /**
@@ -26,10 +27,11 @@ export class Compositor {
     
     constructor(width: number, height: number) {
         this.canvas = new OffscreenCanvas(width, height);
+        // REMOVED desynchronized: true - it causes blank frames in VideoFrame capture
         const gl = this.canvas.getContext('webgl2', { 
             alpha: false, 
-            desynchronized: true, 
-            powerPreference: 'high-performance' 
+            powerPreference: 'high-performance',
+            preserveDrawingBuffer: true 
         });
 
         if (!gl) throw new Error("WebGL2 not supported in this browser.");
@@ -106,8 +108,22 @@ export class Compositor {
 
     private initBuffers() {
         // Full screen quad
-        const positions = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]);
-        const texCoords = new Float32Array([0, 1, 1, 1, 0, 0, 1, 0]);
+        // Positions (Clip Space -1 to 1)
+        const positions = new Float32Array([
+            -1, -1, 
+             1, -1, 
+            -1,  1, 
+             1,  1
+        ]);
+        
+        // Texture Coords (0 to 1). 
+        // Y-flipped to match VideoFrame orientation usually being Top-Down in WebGL
+        const texCoords = new Float32Array([
+            0, 1, 
+            1, 1, 
+            0, 0, 
+            1, 0
+        ]);
 
         const posBuffer = this.gl.createBuffer();
         this.gl.bindBuffer(this.gl.ARRAY_BUFFER, posBuffer);
@@ -147,8 +163,6 @@ export class Compositor {
         const ctx = this.overlayCtx;
         const w = this.overlayCanvas.width;
         const h = this.overlayCanvas.height;
-        
-        // Base reference width (approx mobile preview width) to scale relative sizes
         const REFERENCE_WIDTH = 360; 
         const scaleFactor = w / REFERENCE_WIDTH;
 
@@ -165,13 +179,12 @@ export class Compositor {
                 ctx.font = `bold ${fontSize}px Inter, sans-serif`;
                 ctx.fillStyle = ov.style?.color || 'white';
                 ctx.textAlign = align as CanvasTextAlign;
-                ctx.textBaseline = 'middle'; // simplify vertical alignment
+                ctx.textBaseline = 'middle'; 
 
                 if (ov.style?.backgroundColor) {
                     const metrics = ctx.measureText(ov.content);
                     const bgPadding = fontSize * 0.2;
                     ctx.fillStyle = ov.style.backgroundColor;
-                    // Draw rect background
                     const rectX = align === 'center' ? -metrics.width/2 : align === 'right' ? -metrics.width : 0;
                     ctx.fillRect(
                         rectX - bgPadding, 
@@ -186,15 +199,11 @@ export class Compositor {
             } else if (ov.type === 'image') {
                 const bitmap = bitmaps.get(ov.id);
                 if (bitmap) {
-                    // ov.scale is roughly % of width in UI or a raw number. 
-                    // In Editor, scale 30 = 90px width on 360px screen (~25%)
                     const targetW = (ov.scale * 3) * scaleFactor;
                     const ratio = bitmap.height / bitmap.width;
                     const targetH = targetW * ratio;
-                    
                     const drawX = align === 'center' ? -targetW/2 : align === 'right' ? -targetW : 0;
                     const drawY = -targetH/2;
-                    
                     ctx.drawImage(bitmap, drawX, drawY, targetW, targetH);
                 }
             }
@@ -203,7 +212,9 @@ export class Compositor {
 
         // Upload to Texture
         this.gl.bindTexture(this.gl.TEXTURE_2D, this.overlayTexture);
+        this.gl.pixelStorei(this.gl.UNPACK_FLIP_Y_WEBGL, true); // Flip for overlays to match
         this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, this.gl.RGBA, this.gl.UNSIGNED_BYTE, this.overlayCanvas);
+        this.gl.pixelStorei(this.gl.UNPACK_FLIP_Y_WEBGL, false); // Reset
     }
 
     private getPosition(pos: string, w: number, h: number) {
@@ -215,7 +226,7 @@ export class Compositor {
         else if (pos.includes('right')) { x = w - pad; align = 'right'; }
         else { x = w / 2; align = 'center'; }
 
-        if (pos.includes('top')) y = pad + (h * 0.05); // slightly down from top
+        if (pos.includes('top')) y = pad + (h * 0.05); 
         else if (pos.includes('bottom')) y = h - bottomPad;
         else y = h / 2;
 
@@ -232,9 +243,10 @@ export class Compositor {
         // --- PASS 1: VIDEO (CROP/SCALE) ---
         this.gl.activeTexture(this.gl.TEXTURE0);
         this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+        
+        // VideoFrame usually doesn't need Flip Y if using the shader texCoords I defined [0,1...1,0]
         this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, this.gl.RGBA, this.gl.UNSIGNED_BYTE, frame);
 
-        // Calculate Crop
         const srcRatio = frame.displayWidth / frame.displayHeight;
         const tgtRatio = this.canvas.width / this.canvas.height;
         let w = 1.0, h = 1.0;
@@ -255,26 +267,25 @@ export class Compositor {
         
         this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4);
 
-
         // --- PASS 2: OVERLAYS (FULL SCREEN BLEND) ---
         this.gl.enable(this.gl.BLEND);
         this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
         
         this.gl.bindTexture(this.gl.TEXTURE_2D, this.overlayTexture);
-        
-        // Reset uniforms to 1:1 for overlay layer
         this.gl.uniform2f(this.cropScaleLoc, 1.0, 1.0);
         this.gl.uniform2f(this.cropOffsetLoc, 0.0, 0.0);
         
         this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4);
-        
         this.gl.disable(this.gl.BLEND);
+
+        // 🔥 IMPORTANT: Force command queue flush to ensure frame is ready for encoding
+        this.gl.finish(); 
     }
 
     public getOutputFrame(timestamp: number, duration?: number): VideoFrame {
         return new VideoFrame(this.canvas, {
             timestamp: timestamp,
-            duration: duration
+            duration: duration || undefined
         });
     }
 }

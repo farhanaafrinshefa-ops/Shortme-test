@@ -1,308 +1,236 @@
+
 import { MP4Demuxer } from './MP4Demuxer';
 import { MP4Muxer } from './MP4Muxer';
 import { Compositor } from './Compositor';
 import { WorkerCommand, WorkerResponse, RenderConfig } from './types';
 import { OverlayConfig } from '../../types';
 
-// State
 let demuxer: MP4Demuxer | null = null;
 let muxer: MP4Muxer | null = null;
 let compositor: Compositor | null = null;
 let videoEncoder: VideoEncoder | null = null;
 let videoDecoder: VideoDecoder | null = null;
-let overlayBitmaps: Map<string, ImageBitmap> = new Map();
 
-// Messaging
+let muxerHasVideoTrack = false;
+let overlayBitmaps = new Map<string, ImageBitmap>();
+
 self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
-    const { type } = e.data;
-
-    if (type === 'init') {
+    if (e.data.type === 'init') {
         const { file, config } = (e.data as any).payload;
         await startPipeline(file, config);
-    } 
-    else if (type === 'cancel') {
-        cleanup();
     }
+    if (e.data.type === 'cancel') cleanup();
 };
 
-const postResponse = (response: WorkerResponse) => {
-    self.postMessage(response);
-};
+const post = (msg: WorkerResponse) => self.postMessage(msg);
+
+/* ---------------- CLEANUP ---------------- */
 
 function cleanup() {
-    if (videoDecoder) { 
-        try { videoDecoder.close(); } catch(e){}
-        videoDecoder = null; 
-    }
-    if (videoEncoder) { 
-        try { videoEncoder.close(); } catch(e){}
-        videoEncoder = null; 
-    }
-    overlayBitmaps.forEach(bmp => { try { bmp.close(); } catch(e){} });
+    try { videoDecoder?.close(); } catch {}
+    try { videoEncoder?.close(); } catch {}
+
+    overlayBitmaps.forEach(b => { try { b.close(); } catch {} });
     overlayBitmaps.clear();
+
     demuxer = null;
     muxer = null;
     compositor = null;
+    videoEncoder = null;
+    videoDecoder = null;
+    muxerHasVideoTrack = false;
 }
 
-// --- ASSET PREPARATION ---
+/* ---------------- OVERLAYS ---------------- */
+
 async function prepareOverlays(overlays: OverlayConfig[]) {
     overlayBitmaps.clear();
-    for (const ov of overlays) {
-        if (ov.type === 'image' && ov.file) {
-            try {
-                const bmp = await createImageBitmap(ov.file);
-                overlayBitmaps.set(ov.id, bmp);
-            } catch (e) {
-                console.warn(`Failed to load image overlay ${ov.id}`, e);
-            }
+    for (const o of overlays) {
+        if (o.type === 'image' && o.file) {
+            const bmp = await createImageBitmap(o.file);
+            overlayBitmaps.set(o.id, bmp);
         }
     }
 }
 
-// --- MATH HELPERS ---
-function getInterpolatedReframe(keyframes: any[], time: number) {
-    if (!keyframes || keyframes.length === 0) return { x: 0.5, y: 0.5, scale: 1.0 };
-    
-    let k1 = keyframes[0];
-    let k2 = keyframes[0];
-    
-    for (let i = 0; i < keyframes.length; i++) {
-        if (keyframes[i].timestamp <= time) {
-            k1 = keyframes[i];
-        } else {
-            k2 = keyframes[i];
-            break;
-        }
-    }
+/* ---------------- PIPELINE ---------------- */
 
-    if (k1 === k2) return { x: k1.centerX, y: k1.centerY, scale: k1.scale || 1.0 };
-
-    const dt = k2.timestamp - k1.timestamp;
-    if (dt <= 0.0001) return { x: k1.centerX, y: k1.centerY, scale: k1.scale || 1.0 };
-
-    const t = (time - k1.timestamp) / dt;
-    const clampedT = Math.max(0, Math.min(1, t));
-
-    return {
-        x: k1.centerX + (k2.centerX - k1.centerX) * clampedT,
-        y: k1.centerY + (k2.centerY - k1.centerY) * clampedT,
-        scale: (k1.scale || 1) + ((k2.scale || 1) - (k1.scale || 1)) * clampedT
-    };
-}
-
-
-// --- PHASE 2: VISUAL PIPELINE (TRANSCODING) ---
 async function startPipeline(file: Blob, config: RenderConfig) {
     try {
-        postResponse({ type: 'status', payload: { phase: 'Initializing', progress: 0 } });
-        
-        const startTime = config.startTime || 0;
-        const endTime = config.endTime || Infinity;
-        const startMicro = startTime * 1_000_000;
-        const endMicro = endTime * 1_000_000;
+        post({ type: 'status', payload: { phase: 'Init', progress: 0 } });
 
-        // 0. Load Overlay Assets
-        if (config.overlays && config.overlays.length > 0) {
-            await prepareOverlays(config.overlays);
-        }
-
-        // 1. Demux (Get All Chunks for Buffering)
         demuxer = new MP4Demuxer();
         await demuxer.load(file);
-        
+
         const videoChunks = await demuxer.getAllVideoChunks();
         const audioChunks = await demuxer.getAllAudioChunks();
 
         const decoderConfig = demuxer.getVideoConfig();
-        if (!decoderConfig) throw new Error("No video track found.");
+        if (!decoderConfig) throw new Error('No video track found');
 
-        // 2. Setup Muxer (Output) - Track added lazily
         muxer = new MP4Muxer();
 
-        const audioConfig = demuxer.getAudioConfig();
-        if (audioConfig) {
-             muxer.addAudioTrack({
-                 codec: audioConfig.codec,
-                 numberOfChannels: audioConfig.numberOfChannels,
-                 sampleRate: audioConfig.sampleRate,
-                 description: audioConfig.description
-             });
+        const audioCfg = demuxer.getAudioConfig();
+        if (audioCfg) {
+            muxer.addAudioTrack({
+                codec: audioCfg.codec,
+                numberOfChannels: audioCfg.numberOfChannels,
+                sampleRate: audioCfg.sampleRate,
+                description: audioCfg.description
+            });
         }
 
-        // 3. Setup Visual Components
         compositor = new Compositor(config.width, config.height);
-        
-        // Bake Overlays once (since they are static per clip)
         if (config.overlays) {
+            await prepareOverlays(config.overlays);
             compositor.updateOverlays(config.overlays, overlayBitmaps);
         }
 
-        // 4. Setup Encoder
-        let framesProcessed = 0;
-        const validChunks = videoChunks.filter(c => c.timestamp >= startMicro && c.timestamp <= endMicro);
-        const totalVideoFrames = validChunks.length;
-        
-        let encoderResolve: () => void;
-        let encoderReject: (e: any) => void;
-        const encoderPromise = new Promise<void>((res, rej) => { encoderResolve = res; encoderReject = rej; });
+        /* ---------- FILTER TIME RANGE ---------- */
 
-        // Adaptive Bitrate: Calculate based on Resolution and FPS
-        const pixelCount = config.width * config.height;
-        const targetFps = config.fps || 30;
-        const calculatedBitrate = Math.floor(pixelCount * targetFps * 0.15);
-        const finalBitrate = config.bitrate ? config.bitrate : Math.max(2_000_000, calculatedBitrate);
-        
-        let muxerStarted = false;
+        const startUs = (config.startTime ?? 0) * 1_000_000;
+        const endUs = (config.endTime ?? Infinity) * 1_000_000;
+
+        const validChunks = videoChunks.filter(
+            c => c.timestamp >= startUs && c.timestamp <= endUs
+        );
+
+        if (!validChunks.length) throw new Error('No frames in selected range');
+
+        /* ---------- HARD SEEK TO FIRST KEYFRAME ---------- */
+
+        const firstKeyIndex = validChunks.findIndex(c => c.type === 'key');
+        if (firstKeyIndex === -1) {
+            throw new Error('No keyframe found in clip range');
+        }
+
+        const decodeChunks = validChunks.slice(firstKeyIndex);
+
+        /* ---------- ENCODER ---------- */
+
+        let firstVideoTimestamp: number | null = null;
+        let lastKeyframeTime = -2_000_000;
 
         videoEncoder = new VideoEncoder({
-            output: (chunk, metadata) => {
-                // 1️⃣ Add video track ONCE
-                if (!muxerStarted && metadata?.decoderConfig && muxer) {
-                    
-                    // Safe conversion handled by MP4Muxer (Uint8Array check inside)
-                    const description = metadata.decoderConfig.description;
+            output: (chunk, meta) => {
+                if (!muxerHasVideoTrack) {
+                    const raw = meta.decoderConfig?.description;
+                    const desc = raw ? new Uint8Array(raw as ArrayBuffer) : undefined;
 
-                    muxer.addVideoTrack({
+                    muxer!.addVideoTrack({
+                        codec: 'avc1.4d002a',
                         width: config.width,
                         height: config.height,
-                        codec: 'avc1.4d002a',
-                        description: description as any 
+                        description: desc
                     });
 
-                    // 🔥 THIS LINE FIXES 0.00s VIDEO
-                    muxer.start();
-                    muxerStarted = true;
+                    muxer!.start();
+                    muxerHasVideoTrack = true;
                 }
 
-                // 2️⃣ Add encoded chunk
-                muxer?.addVideoChunk(chunk);
+                muxer!.addVideoChunk(chunk);
             },
-            error: (e) => {
-                console.error("Encoder Error", e);
-                encoderReject(e);
-            }
+            error: e => { throw e; }
         });
 
         videoEncoder.configure({
             codec: 'avc1.4d002a',
             width: config.width,
             height: config.height,
-            bitrate: finalBitrate,
-            framerate: targetFps
+            bitrate: config.bitrate ?? 4_000_000,
+            framerate: config.fps ?? 30
         });
 
-        // 5. Setup Decoder
-        let timestampOffset: number | null = null;
-        
-        // Keyframe Logic: Force keyframe every 2 seconds for seekability
-        const KEYFRAME_INTERVAL = 2_000_000; // microseconds
-        let lastKeyFrameTime = -KEYFRAME_INTERVAL;
+        /* ---------- DECODER ---------- */
+
+        let frames = 0;
 
         videoDecoder = new VideoDecoder({
-            output: async (frame) => {
-                // Pre-roll discard
-                if (frame.timestamp < startMicro) {
-                    frame.close();
-                    return;
+            output: frame => {
+                if (firstVideoTimestamp === null) {
+                    firstVideoTimestamp = frame.timestamp;
                 }
-                
-                // Reframe Math
-                const reframe = getInterpolatedReframe(config.reframeKeyframes || [], frame.timestamp / 1_000_000);
-                
-                // Draw (Video + Overlays)
-                compositor!.render(frame, reframe);
-                frame.close(); 
 
-                // Encode
-                if (timestampOffset === null) timestampOffset = frame.timestamp;
-                const newTimestamp = frame.timestamp - timestampOffset;
+                const ts = frame.timestamp - firstVideoTimestamp;
 
-                // FIX: Explicitly handle null duration -> undefined
-                const frameDuration = frame.duration ?? undefined;
-                const newFrame = compositor!.getOutputFrame(newTimestamp, frameDuration);
-                
-                // Smart Keyframe insertion
-                const shouldKeyFrame = (newTimestamp - lastKeyFrameTime) >= KEYFRAME_INTERVAL;
-                if (shouldKeyFrame) lastKeyFrameTime = newTimestamp;
+                compositor!.render(frame);
+                frame.close();
 
-                videoEncoder!.encode(newFrame, { keyFrame: shouldKeyFrame });
-                newFrame.close();
+                const shouldKey =
+                    ts - lastKeyframeTime >= 2_000_000;
 
-                framesProcessed++;
-                if (framesProcessed % 15 === 0) {
-                    const prog = Math.round((framesProcessed / totalVideoFrames) * 100);
-                    postResponse({ type: 'status', payload: { phase: 'Rendering', progress: prog } });
+                if (shouldKey) lastKeyframeTime = ts;
+
+                const outFrame = compositor!.getOutputFrame(
+                    ts,
+                    frame.duration ?? undefined
+                );
+
+                videoEncoder!.encode(outFrame, { keyFrame: shouldKey });
+                outFrame.close();
+
+                frames++;
+                if (frames % 15 === 0) {
+                    post({
+                        type: 'status',
+                        payload: {
+                            phase: 'Rendering',
+                            progress: Math.round((frames / decodeChunks.length) * 100)
+                        }
+                    });
                 }
             },
-            error: (e) => console.error("Decoder Error", e)
+            error: e => { throw e; }
         });
 
         videoDecoder.configure(decoderConfig);
 
-        // 6. The Pipeline Loop
-        postResponse({ type: 'status', payload: { phase: 'Rendering', progress: 0 } });
-        
-        if (validChunks.length > 0) {
-            timestampOffset = validChunks[0].timestamp;
-        }
+        /* ---------- PIPE ---------- */
 
-        let decoderStarted = false;
-
-        for (const chunk of validChunks) {
-            // 🚨 Skip until first keyframe to prevent WebCodecs errors
-            if (!decoderStarted) {
-                if (chunk.type !== 'key') continue;
-                decoderStarted = true;
-            }
-
-            // BACKPRESSURE: Prevent memory overload
+        for (const chunk of decodeChunks) {
             while (videoDecoder.decodeQueueSize > 5) {
-                await new Promise(r => setTimeout(r, 10));
+                await new Promise(r => setTimeout(r, 5));
             }
             videoDecoder.decode(chunk);
         }
 
-        // 7. Finalization
         await videoDecoder.flush();
-        // VideoEncoder.flush() automatically waits for all pending outputs to be emitted.
         await videoEncoder.flush();
 
-        // 8. Audio Passthrough
-        if (audioConfig) {
-            const validAudio = audioChunks.filter(c => c.timestamp >= startMicro && c.timestamp <= endMicro);
-            for (const chunk of validAudio) {
-                 if (timestampOffset !== null) {
-                     const newTs = chunk.timestamp - timestampOffset;
-                     // Only include audio that starts after video starts (avoid negative sync)
-                     if (newTs >= 0) {
-                        const newChunk = new EncodedAudioChunk({
-                            type: chunk.type,
-                            timestamp: newTs,
-                            duration: chunk.duration,
-                            data: copyData(chunk)
-                        });
-                        muxer.addAudioChunk(newChunk);
-                     }
-                 }
+        /* ---------- AUDIO PASSTHROUGH ---------- */
+
+        if (audioCfg && firstVideoTimestamp !== null) {
+            for (const a of audioChunks) {
+                if (a.timestamp < startUs || a.timestamp > endUs) continue;
+
+                const ts = a.timestamp - firstVideoTimestamp;
+                if (ts < 0) continue;
+
+                muxer.addAudioChunk(new EncodedAudioChunk({
+                    type: a.type,
+                    timestamp: ts,
+                    duration: a.duration,
+                    data: copyData(a)
+                }));
             }
         }
 
-        console.log("Transcoding Complete");
-        postResponse({ type: 'status', payload: { phase: 'Finalizing', progress: 100 } });
+        /* ---------- FINALIZE ---------- */
 
         const blob = muxer.getBlob();
-        postResponse({ type: 'done', payload: blob });
+        post({ type: 'done', payload: blob });
 
     } catch (e: any) {
-        console.error("Pipeline Failed", e);
-        postResponse({ type: 'error', payload: e.message });
+        console.error(e);
+        post({ type: 'error', payload: e.message });
     } finally {
         cleanup();
     }
 }
 
-function copyData(chunk: any): ArrayBuffer {
+/* ---------------- UTIL ---------------- */
+
+function copyData(chunk: EncodedVideoChunk | EncodedAudioChunk): ArrayBuffer {
     const buffer = new ArrayBuffer(chunk.byteLength);
     chunk.copyTo(buffer);
     return buffer;
