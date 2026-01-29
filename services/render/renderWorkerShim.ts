@@ -606,21 +606,26 @@ async function startPipeline(file, config) {
         const finalBitrate = config.bitrate ? config.bitrate : Math.max(2_000_000, calculatedBitrate);
 
         const frameDuration = 1000000 / targetFps;
+        
+        let muxerStarted = false;
 
         videoEncoder = new VideoEncoder({
-            output: (chunk, meta) => {
-                // Initialize Track on first chunk to ensure description is available
-                if (muxer.videoTrackId === null) {
+            output: (chunk, metadata) => {
+                // 1️⃣ Add video track ONCE
+                if (!muxerStarted && metadata?.decoderConfig) {
                     muxer.addVideoTrack({
                         width: config.width,
                         height: config.height,
-                        codec: 'avc1.4d002a', 
-                        description: meta.decoderConfig?.description
+                        codec: 'avc1.4d002a',
+                        description: metadata.decoderConfig.description
                     });
-                    
-                    // CRITICAL: Call start() here after track is added but before samples
+
+                    // 🔥 THIS LINE FIXES 0.00s VIDEO
                     muxer.start();
+                    muxerStarted = true;
                 }
+
+                // 2️⃣ Add encoded chunk
                 muxer.addVideoChunk(chunk, frameDuration);
             },
             error: (e) => {
@@ -638,14 +643,11 @@ async function startPipeline(file, config) {
         });
 
         let timestampOffset = null;
-        let pendingFrames = 0;
         const KEYFRAME_INTERVAL = 2_000_000;
         let lastKeyFrameTime = -KEYFRAME_INTERVAL;
 
         videoDecoder = new VideoDecoder({
             output: async (frame) => {
-                pendingFrames--; 
-                
                 // Pre-roll discard
                 if (frame.timestamp < startMicro) {
                     frame.close();
@@ -682,12 +684,19 @@ async function startPipeline(file, config) {
 
         postResponse({ type: 'status', payload: { phase: 'Rendering', progress: 0 } });
         
+        let decoderStarted = false;
+
         for (const chunk of validChunks) {
+            // 🚨 Skip until first keyframe
+            if (!decoderStarted) {
+                if (chunk.type !== 'key') continue;
+                decoderStarted = true;
+            }
+
             while (videoDecoder.decodeQueueSize > 5) {
                 await new Promise(r => setTimeout(r, 10));
             }
             videoDecoder.decode(chunk);
-            pendingFrames++;
         }
 
         await videoDecoder.flush();

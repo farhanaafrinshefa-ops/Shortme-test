@@ -11,7 +11,6 @@ let compositor: Compositor | null = null;
 let videoEncoder: VideoEncoder | null = null;
 let videoDecoder: VideoDecoder | null = null;
 let overlayBitmaps: Map<string, ImageBitmap> = new Map();
-let muxerHasVideoTrack = false;
 
 // Messaging
 self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
@@ -44,7 +43,6 @@ function cleanup() {
     demuxer = null;
     muxer = null;
     compositor = null;
-    muxerHasVideoTrack = false;
 }
 
 // --- ASSET PREPARATION ---
@@ -154,32 +152,30 @@ async function startPipeline(file: Blob, config: RenderConfig) {
         const targetFps = config.fps || 30;
         const calculatedBitrate = Math.floor(pixelCount * targetFps * 0.15);
         const finalBitrate = config.bitrate ? config.bitrate : Math.max(2_000_000, calculatedBitrate);
+        
+        let muxerStarted = false;
 
         videoEncoder = new VideoEncoder({
-            output: (chunk, meta) => {
-                // Lazy Track Initialization to capture Encoder Description
-                if (muxer && !muxerHasVideoTrack) {
-                    // Fix: Convert description to Uint8Array safely for MP4Box
-                    const rawDesc = meta.decoderConfig?.description;
-                    let description: Uint8Array | undefined;
+            output: (chunk, metadata) => {
+                // 1️⃣ Add video track ONCE
+                if (!muxerStarted && metadata?.decoderConfig && muxer) {
                     
-                    if (rawDesc) {
-                        if (rawDesc instanceof Uint8Array) {
-                            description = rawDesc;
-                        } else {
-                            // Safely handle ArrayBuffer or other buffer source types
-                            description = new Uint8Array(rawDesc as ArrayBuffer);
-                        }
-                    }
+                    // Safe conversion handled by MP4Muxer (Uint8Array check inside)
+                    const description = metadata.decoderConfig.description;
 
                     muxer.addVideoTrack({
                         width: config.width,
                         height: config.height,
                         codec: 'avc1.4d002a',
-                        description: description
+                        description: description as any 
                     });
-                    muxerHasVideoTrack = true;
+
+                    // 🔥 THIS LINE FIXES 0.00s VIDEO
+                    muxer.start();
+                    muxerStarted = true;
                 }
+
+                // 2️⃣ Add encoded chunk
                 muxer?.addVideoChunk(chunk);
             },
             error: (e) => {
@@ -198,14 +194,18 @@ async function startPipeline(file: Blob, config: RenderConfig) {
 
         // 5. Setup Decoder
         let timestampOffset: number | null = null;
-        let pendingFrames = 0;
+        
         // Keyframe Logic: Force keyframe every 2 seconds for seekability
         const KEYFRAME_INTERVAL = 2_000_000; // microseconds
         let lastKeyFrameTime = -KEYFRAME_INTERVAL;
 
         videoDecoder = new VideoDecoder({
             output: async (frame) => {
-                pendingFrames--; 
+                // Pre-roll discard
+                if (frame.timestamp < startMicro) {
+                    frame.close();
+                    return;
+                }
                 
                 // Reframe Math
                 const reframe = getInterpolatedReframe(config.reframeKeyframes || [], frame.timestamp / 1_000_000);
@@ -247,19 +247,28 @@ async function startPipeline(file: Blob, config: RenderConfig) {
             timestampOffset = validChunks[0].timestamp;
         }
 
+        let decoderStarted = false;
+
         for (const chunk of validChunks) {
+            // 🚨 Skip until first keyframe to prevent WebCodecs errors
+            if (!decoderStarted) {
+                if (chunk.type !== 'key') continue;
+                decoderStarted = true;
+            }
+
             // BACKPRESSURE: Prevent memory overload
             while (videoDecoder.decodeQueueSize > 5) {
                 await new Promise(r => setTimeout(r, 10));
             }
             videoDecoder.decode(chunk);
-            pendingFrames++;
         }
 
+        // 7. Finalization
         await videoDecoder.flush();
+        // VideoEncoder.flush() automatically waits for all pending outputs to be emitted.
         await videoEncoder.flush();
 
-        // 7. Audio Passthrough
+        // 8. Audio Passthrough
         if (audioConfig) {
             const validAudio = audioChunks.filter(c => c.timestamp >= startMicro && c.timestamp <= endMicro);
             for (const chunk of validAudio) {

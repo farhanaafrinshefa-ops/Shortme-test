@@ -7,6 +7,7 @@ export class MP4Muxer {
   private file: any;
   private videoTrackId: number | null = null;
   private audioTrackId: number | null = null;
+  private started: boolean = false;
 
   constructor() {
     this.file = MP4Box.createFile();
@@ -56,6 +57,16 @@ export class MP4Muxer {
       }
 
       return this.audioTrackId;
+  }
+
+  /**
+   * Starts the muxing process.
+   */
+  start() {
+    if (!this.started) {
+        this.file.start();
+        this.started = true;
+    }
   }
 
   /**
