@@ -1,0 +1,8 @@
+{
+  "name": "Backup of Modern visual Working with reframing of ShortsCut AI",
+  "description": "World-class offline-first mobile video editor with Gemini-powered viral clipping.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

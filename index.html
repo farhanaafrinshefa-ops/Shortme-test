@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>ShortMe</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            colors: {
+              glass: {
+                100: 'var(--glass-100)',
+                200: 'var(--glass-200)',
+                300: 'var(--glass-300)',
+                border: 'var(--glass-border)',
+                dark: 'var(--glass-dark)',
+              },
+              brand: {
+                primary: '#6366f1', // Indigo 500
+                secondary: '#ec4899', // Pink 500
+                accent: '#8b5cf6', // Violet 500
+                dark: '#0f0f12',
+              }
+            },
+            animation: {
+              'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+              'blob': 'blob 7s infinite',
+              'gradient-x': 'gradient-x 15s ease infinite',
+              'float': 'float 6s ease-in-out infinite',
+              'spin-slow': 'spin 8s linear infinite',
+              'marquee': 'marquee 15s linear infinite',
+              'move-left': 'move-left 8s linear infinite',
+              'move-left-slow': 'move-left 12s linear infinite',
+              'move-left-fast': 'move-left 5s linear infinite',
+              'scan-vertical': 'scan-vertical 3s ease-in-out infinite',
+              'feed-in': 'feed-in 4s ease-in-out infinite',
+              'eject-out-1': 'eject-out 4s ease-in-out infinite 2s', // Delayed start
+              'eject-out-2': 'eject-out 4s ease-in-out infinite 2.2s',
+              'eject-out-3': 'eject-out 4s ease-in-out infinite 2.4s',
+              'playhead-move': 'playhead-move 4s linear infinite',
+              'scissor-cut': 'scissor-cut 4s ease-in-out infinite',
+              'clip-shrink': 'clip-shrink 4s ease-in-out infinite',
+              'save-badge': 'save-badge 4s ease-in-out infinite',
+            },
+            keyframes: {
+              blob: {
+                '0%': { transform: 'translate(0px, 0px) scale(1)' },
+                '33%': { transform: 'translate(30px, -50px) scale(1.1)' },
+                '66%': { transform: 'translate(-20px, 20px) scale(0.9)' },
+                '100%': { transform: 'translate(0px, 0px) scale(1)' },
+              },
+              'gradient-x': {
+                '0%, 100%': {
+                  'background-size': '200% 200%',
+                  'background-position': 'left center'
+                },
+                '50%': {
+                  'background-size': '200% 200%',
+                  'background-position': 'right center'
+                },
+              },
+              float: {
+                  '0%, 100%': { transform: 'translateY(0)' },
+                  '50%': { transform: 'translateY(-10px)' },
+              },
+              marquee: {
+                  '0%': { transform: 'translateX(100%)' },
+                  '100%': { transform: 'translateX(-100%)' },
+              },
+              'move-left': {
+                  '0%': { transform: 'translateX(0)' },
+                  '100%': { transform: 'translateX(-50%)' },
+              },
+              'scan-vertical': {
+                  '0%, 100%': { top: '0%', opacity: 0 },
+                  '10%': { opacity: 1 },
+                  '90%': { opacity: 1 },
+                  '50%': { top: '100%' },
+              },
+              // New Animations for Visual Storytelling
+              'feed-in': {
+                '0%': { transform: 'translateX(-120%) scale(0.8)', opacity: 0 },
+                '10%': { transform: 'translateX(-120%) scale(0.8)', opacity: 1 },
+                '40%': { transform: 'translateX(0%) scale(1)', opacity: 1 }, // Hits center
+                '50%': { transform: 'translateX(0%) scale(0)', opacity: 0 }, // Consumed
+                '100%': { transform: 'translateX(0%) scale(0)', opacity: 0 }
+              },
+              'eject-out': {
+                 '0%, 45%': { transform: 'translateX(-50%) scale(0)', opacity: 0 },
+                 '55%': { transform: 'translateX(0%) scale(1)', opacity: 1 },
+                 '90%': { transform: 'translateX(120%) scale(1)', opacity: 0 },
+                 '100%': { transform: 'translateX(120%) scale(1)', opacity: 0 }
+              },
+              'playhead-move': {
+                 '0%': { left: '0%' },
+                 '40%': { left: '50%' }, // Pause for cut
+                 '60%': { left: '50%' },
+                 '100%': { left: '100%' }
+              },
+              'scissor-cut': {
+                 '0%, 35%': { opacity: 0, transform: 'scale(0)' },
+                 '40%': { opacity: 1, transform: 'scale(1.2)' }, // Pop in
+                 '45%': { transform: 'scale(1) rotate(-15deg)' },
+                 '50%': { transform: 'scale(1) rotate(0deg)' }, // Snip
+                 '55%, 100%': { opacity: 0, transform: 'scale(0)' }
+              },
+              'clip-shrink': {
+                  '0%, 50%': { width: '40%', opacity: 1 },
+                  '60%': { width: '0%', opacity: 0 }, // Trim happens
+                  '100%': { width: '0%', opacity: 0 }
+              },
+              'save-badge': {
+                  '0%, 70%': { opacity: 0, transform: 'scale(0.5)' },
+                  '80%': { opacity: 1, transform: 'scale(1.1)' },
+                  '90%': { transform: 'scale(1)' },
+                  '100%': { opacity: 0, transform: 'scale(1)' }
+              }
+            }
+          },
+        },
+      };
+    </script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+      :root {
+        --glass-100: rgba(255, 255, 255, 0.4);
+        --glass-200: rgba(255, 255, 255, 0.6);
+        --glass-300: rgba(255, 255, 255, 0.8);
+        --glass-border: rgba(0, 0, 0, 0.05);
+        --glass-dark: rgba(255, 255, 255, 0.8); /* For footer areas in light mode */
+      }
+      
+      .dark {
+        --glass-100: rgba(255, 255, 255, 0.05);
+        --glass-200: rgba(255, 255, 255, 0.1);
+        --glass-300: rgba(255, 255, 255, 0.2);
+        --glass-border: rgba(255, 255, 255, 0.1);
+        --glass-dark: rgba(0, 0, 0, 0.4);
+      }
+
+      body {
+        background-color: #f8fafc; /* Light Mode Default */
+        color: #0f172a;
+        -webkit-tap-highlight-color: transparent;
+        overscroll-behavior-y: none;
+        font-family: 'Inter', system-ui, sans-serif;
+        transition: background-color 0.5s ease;
+      }
+
+      .dark body {
+        background-color: #0f0f12; /* Dark Mode Default */
+        color: white;
+      }
+
+      /* Custom Scrollbar */
+      ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: rgba(0, 0, 0, 0.2);
+        border-radius: 3px;
+      }
+      .dark ::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.2);
+      }
+      .no-scrollbar::-webkit-scrollbar {
+        display: none;
+      }
+      .no-scrollbar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+      }
+
+      /* Animated Gradient Background */
+      .animate-gradient-bg {
+          background: linear-gradient(-45deg, #ee7752, #e73c7e, #23a6d5, #23d5ab);
+          background-size: 400% 400%;
+          animation: gradient 15s ease infinite;
+      }
+
+      @keyframes gradient {
+          0% { background-position: 0% 50%; }
+          50% { background-position: 100% 50%; }
+          100% { background-position: 0% 50%; }
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "react": "https://esm.sh/react@^19.2.3",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "@google/genai": "https://esm.sh/@google/genai@^1.38.0",
+    "d3": "https://esm.sh/d3@^7.9.0",
+    "@mediapipe/tasks-vision": "https://esm.sh/@mediapipe/tasks-vision@0.10.8",
+    "mp4box": "https://esm.sh/mp4box@0.5.2"
+  }
+}
+</script>
+</head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
