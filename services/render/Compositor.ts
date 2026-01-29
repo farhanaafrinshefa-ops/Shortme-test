@@ -271,7 +271,8 @@ export class Compositor {
         this.gl.disable(this.gl.BLEND);
     }
 
-    public getOutputFrame(timestamp: number, duration: number | null | undefined): VideoFrame {
+    // UPDATED SIGNATURE: Accept number, null, or undefined to be robust
+    public getOutputFrame(timestamp: number, duration?: number | null): VideoFrame {
         return new VideoFrame(this.canvas, {
             timestamp: timestamp,
             duration: duration ?? undefined

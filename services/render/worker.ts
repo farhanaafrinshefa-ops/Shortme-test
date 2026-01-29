@@ -203,8 +203,9 @@ async function startPipeline(file: Blob, config: RenderConfig) {
                 if (timestampOffset === null) timestampOffset = frame.timestamp;
                 const newTimestamp = frame.timestamp - timestampOffset;
 
-                // FIX: duration can be null, convert to undefined
-                const newFrame = compositor!.getOutputFrame(newTimestamp, frame.duration ?? undefined);
+                // FIX: explicitly handle null duration for TypeScript
+                const frameDuration = frame.duration === null ? undefined : frame.duration;
+                const newFrame = compositor!.getOutputFrame(newTimestamp, frameDuration);
                 
                 // Smart Keyframe insertion
                 const shouldKeyFrame = (newTimestamp - lastKeyFrameTime) >= KEYFRAME_INTERVAL;
