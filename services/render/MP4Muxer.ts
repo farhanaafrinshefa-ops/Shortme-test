@@ -1,15 +1,5 @@
 import MP4Box from 'mp4box';
 
-// Fix for missing WebCodecs type definition in some environments
-declare class EncodedAudioChunk {
-  constructor(init: { type: 'key' | 'delta', timestamp: number, duration?: number, data: BufferSource });
-  readonly type: 'key' | 'delta';
-  readonly timestamp: number;
-  readonly duration: number | null;
-  readonly byteLength: number;
-  copyTo(destination: BufferSource): void;
-}
-
 /**
  * Handles packaging of EncodedVideoChunks (and Audio) into an MP4 container.
  */

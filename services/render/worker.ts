@@ -4,16 +4,6 @@ import { Compositor } from './Compositor';
 import { WorkerCommand, WorkerResponse, RenderConfig } from './types';
 import { OverlayConfig } from '../../types';
 
-// Fix for missing WebCodecs type definition in some environments
-declare class EncodedAudioChunk {
-  constructor(init: { type: 'key' | 'delta', timestamp: number, duration?: number, data: BufferSource });
-  readonly type: 'key' | 'delta';
-  readonly timestamp: number;
-  readonly duration: number | null;
-  readonly byteLength: number;
-  copyTo(destination: BufferSource): void;
-}
-
 // State
 let demuxer: MP4Demuxer | null = null;
 let muxer: MP4Muxer | null = null;
