@@ -1,25 +1,3 @@
-// Removed vite/client reference which was causing type resolution errors
-// /// <reference types="vite/client" />
-
-/**
- * WebCodecs Type Definitions
- * Polyfill for environments where EncodedAudioChunk is missing
- */
-interface EncodedAudioChunkInit {
-  type: 'key' | 'delta';
-  timestamp: number;
-  duration?: number;
-  data: BufferSource;
-}
-
-declare class EncodedAudioChunk {
-  constructor(init: EncodedAudioChunkInit);
-  readonly type: 'key' | 'delta';
-  readonly timestamp: number;
-  readonly duration: number | null;
-  readonly byteLength: number;
-  copyTo(destination: BufferSource): void;
-}
 
 declare module 'mp4box' {
   const MP4Box: any;

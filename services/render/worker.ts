@@ -11,6 +11,7 @@ let compositor: Compositor | null = null;
 let videoEncoder: VideoEncoder | null = null;
 let videoDecoder: VideoDecoder | null = null;
 let overlayBitmaps: Map<string, ImageBitmap> = new Map();
+let muxerHasVideoTrack = false;
 
 // Messaging
 self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
@@ -43,6 +44,7 @@ function cleanup() {
     demuxer = null;
     muxer = null;
     compositor = null;
+    muxerHasVideoTrack = false;
 }
 
 // --- ASSET PREPARATION ---
@@ -117,16 +119,8 @@ async function startPipeline(file: Blob, config: RenderConfig) {
         const decoderConfig = demuxer.getVideoConfig();
         if (!decoderConfig) throw new Error("No video track found.");
 
-        // 2. Setup Muxer (Output)
+        // 2. Setup Muxer (Output) - Track added lazily
         muxer = new MP4Muxer();
-        
-        // Use AVC1 High Profile if possible, or standard profile. 
-        // 4d002a = High Profile @ Level 4.2
-        muxer.addVideoTrack({
-            width: config.width,
-            height: config.height,
-            codec: 'avc1.4d002a', 
-        });
 
         const audioConfig = demuxer.getAudioConfig();
         if (audioConfig) {
@@ -156,15 +150,36 @@ async function startPipeline(file: Blob, config: RenderConfig) {
         const encoderPromise = new Promise<void>((res, rej) => { encoderResolve = res; encoderReject = rej; });
 
         // Adaptive Bitrate: Calculate based on Resolution and FPS
-        // Rule of thumb: 0.15 bits per pixel for H.264
         const pixelCount = config.width * config.height;
         const targetFps = config.fps || 30;
         const calculatedBitrate = Math.floor(pixelCount * targetFps * 0.15);
-        // Clamp bitrate: Min 2Mbps, Default provided or Calculated
         const finalBitrate = config.bitrate ? config.bitrate : Math.max(2_000_000, calculatedBitrate);
 
         videoEncoder = new VideoEncoder({
             output: (chunk, meta) => {
+                // Lazy Track Initialization to capture Encoder Description
+                if (muxer && !muxerHasVideoTrack) {
+                    // Convert description to Uint8Array safely
+                    const rawDesc = meta.decoderConfig?.description;
+                    let description: Uint8Array | undefined;
+                    
+                    if (rawDesc) {
+                        if (rawDesc instanceof Uint8Array) {
+                            description = rawDesc;
+                        } else {
+                            // Safely handle ArrayBuffer or other buffer source types
+                            description = new Uint8Array(rawDesc as ArrayBuffer);
+                        }
+                    }
+
+                    muxer.addVideoTrack({
+                        width: config.width,
+                        height: config.height,
+                        codec: 'avc1.4d002a',
+                        description: description
+                    });
+                    muxerHasVideoTrack = true;
+                }
                 muxer?.addVideoChunk(chunk);
             },
             error: (e) => {
@@ -203,8 +218,8 @@ async function startPipeline(file: Blob, config: RenderConfig) {
                 if (timestampOffset === null) timestampOffset = frame.timestamp;
                 const newTimestamp = frame.timestamp - timestampOffset;
 
-                // FIX: explicitly handle null duration for TypeScript
-                const frameDuration = frame.duration === null ? undefined : frame.duration;
+                // Robust null handling for duration
+                const frameDuration = frame.duration || undefined;
                 const newFrame = compositor!.getOutputFrame(newTimestamp, frameDuration);
                 
                 // Smart Keyframe insertion

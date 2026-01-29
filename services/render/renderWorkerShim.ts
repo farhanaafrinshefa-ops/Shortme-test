@@ -647,7 +647,8 @@ async function startPipeline(file, config) {
                 if (timestampOffset === null) timestampOffset = frame.timestamp;
                 const newTimestamp = frame.timestamp - timestampOffset;
 
-                const newFrame = compositor.getOutputFrame(newTimestamp, frame.duration);
+                // Fix: Robust null handling for duration in shim
+                const newFrame = compositor.getOutputFrame(newTimestamp, frame.duration || undefined);
                 
                 const shouldKeyFrame = (newTimestamp - lastKeyFrameTime) >= KEYFRAME_INTERVAL;
                 if (shouldKeyFrame) lastKeyFrameTime = newTimestamp;
