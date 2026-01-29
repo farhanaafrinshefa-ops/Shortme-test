@@ -1,6 +1,13 @@
 
 export const RENDER_WORKER_CODE = `
-import MP4Box from "https://esm.sh/mp4box@0.5.2";
+// Use jsdelivr for stable ESM support in Workers
+import MP4Box from "https://cdn.jsdelivr.net/npm/mp4box@0.5.2/+esm";
+
+// Global error handler for the worker to report startup issues
+self.onerror = function(e) {
+    console.error("Worker Global Error:", e);
+    self.postMessage({ type: 'error', payload: "Worker Start Failed: " + (e.message || e) });
+};
 
 // --- MP4Demuxer ---
 class MP4Demuxer {
@@ -162,8 +169,6 @@ class MP4Muxer {
   }
 
   addVideoTrack(config) {
-    // CRITICAL: MP4Box often requires the AVCC to be a TypedArray, not a raw ArrayBuffer, 
-    // to correctly read properties.
     const avcc = config.description ? new Uint8Array(config.description) : undefined;
 
     this.videoTrackId = this.file.addTrack({
@@ -201,13 +206,15 @@ class MP4Muxer {
   addVideoChunk(chunk, fallbackDuration) {
     if (this.videoTrackId === null) return;
     
-    // CRITICAL FIX: Explicitly use Uint8Array view and pass .buffer
-    // MP4Box requires an ArrayBuffer, but chunk.copyTo writes to a view.
-    // This creates the exact binary layout MP4Box expects.
     const data = new Uint8Array(chunk.byteLength);
     chunk.copyTo(data);
 
-    const dur = chunk.duration || fallbackDuration || 0;
+    // FIX: Handle null/undefined explicitly for MP4Box
+    // MP4Box requires a number. chunk.duration can be null in WebCodecs.
+    let dur = chunk.duration;
+    if (dur === null || dur === undefined) {
+        dur = fallbackDuration || 0;
+    }
 
     this.file.addSample(this.videoTrackId, data.buffer, {
       duration: dur,
@@ -223,8 +230,13 @@ class MP4Muxer {
       const data = new Uint8Array(chunk.byteLength);
       chunk.copyTo(data);
 
+      let dur = chunk.duration;
+      if (dur === null || dur === undefined) {
+          dur = 0;
+      }
+
       this.file.addSample(this.audioTrackId, data.buffer, {
-          duration: chunk.duration ?? 0,
+          duration: dur,
           dts: chunk.timestamp,
           cts: chunk.timestamp,
           is_sync: chunk.type === 'key'
@@ -447,6 +459,7 @@ class Compositor {
     }
 
     getOutputFrame(timestamp, duration) {
+        // Fix: Ensure duration is passed as undefined if null/0 to avoid type errors
         return new VideoFrame(this.canvas, {
             timestamp: timestamp,
             duration: duration || undefined
