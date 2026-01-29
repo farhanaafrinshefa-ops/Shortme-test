@@ -1,5 +1,9 @@
-// Removed invalid reference to vite/client to fix "Cannot find type definition file" error
 // /// <reference types="vite/client" />
+
+declare module 'mp4box' {
+  const MP4Box: any;
+  export default MP4Box;
+}
 
 declare module '*.svg' {
   import * as React from 'react';
@@ -15,39 +19,17 @@ declare module '*.gif';
 declare module '*.bmp';
 declare module '*.tiff';
 
-// WebCodecs Type Definitions
-// These are added to support environments where DOM WebCodecs types are missing.
-
-type BufferSource = ArrayBufferView | ArrayBuffer;
-
-interface EncodedAudioChunkInit {
-    type: 'key' | 'delta';
-    timestamp: number;
-    duration?: number;
-    data: BufferSource;
-}
-
+// Fix for missing WebCodecs Audio Type
 declare class EncodedAudioChunk {
-    constructor(init: EncodedAudioChunkInit);
-    readonly type: 'key' | 'delta';
-    readonly timestamp: number;
-    readonly duration: number | null;
-    readonly byteLength: number;
-    copyTo(destination: BufferSource): void;
-}
-
-interface EncodedVideoChunkInit {
+  constructor(init: {
     type: 'key' | 'delta';
     timestamp: number;
     duration?: number;
     data: BufferSource;
-}
-
-declare class EncodedVideoChunk {
-    constructor(init: EncodedVideoChunkInit);
-    readonly type: 'key' | 'delta';
-    readonly timestamp: number;
-    readonly duration: number | null;
-    readonly byteLength: number;
-    copyTo(destination: BufferSource): void;
+  });
+  readonly type: 'key' | 'delta';
+  readonly timestamp: number;
+  readonly duration: number | null;
+  readonly byteLength: number;
+  copyTo(destination: BufferSource): void;
 }
