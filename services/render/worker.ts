@@ -159,7 +159,7 @@ async function startPipeline(file: Blob, config: RenderConfig) {
             output: (chunk, meta) => {
                 // Lazy Track Initialization to capture Encoder Description
                 if (muxer && !muxerHasVideoTrack) {
-                    // Convert description to Uint8Array safely
+                    // Fix: Convert description to Uint8Array safely for MP4Box
                     const rawDesc = meta.decoderConfig?.description;
                     let description: Uint8Array | undefined;
                     
@@ -218,8 +218,8 @@ async function startPipeline(file: Blob, config: RenderConfig) {
                 if (timestampOffset === null) timestampOffset = frame.timestamp;
                 const newTimestamp = frame.timestamp - timestampOffset;
 
-                // Robust null handling for duration
-                const frameDuration = frame.duration || undefined;
+                // FIX: Explicitly handle null duration -> undefined
+                const frameDuration = frame.duration ?? undefined;
                 const newFrame = compositor!.getOutputFrame(newTimestamp, frameDuration);
                 
                 // Smart Keyframe insertion
