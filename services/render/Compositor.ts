@@ -271,10 +271,10 @@ export class Compositor {
         this.gl.disable(this.gl.BLEND);
     }
 
-    public getOutputFrame(timestamp: number, duration: number | null): VideoFrame {
+    public getOutputFrame(timestamp: number, duration: number | null | undefined): VideoFrame {
         return new VideoFrame(this.canvas, {
             timestamp: timestamp,
-            duration: duration || undefined
+            duration: duration ?? undefined
         });
     }
 }
